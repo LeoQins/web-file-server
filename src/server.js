@@ -120,7 +120,7 @@ async function statToEntry(base, name) {
 // List directory
 app.get('/api/list', async (req, res) => {
   try {
-    const dir = safeJoin(ROOT_DIR, req.query.path || '.');
+  const dir = safeJoin(ROOT_DIR, (req.query && req.query.path) ? req.query.path : '.');
     const names = await fsp.readdir(dir, { withFileTypes: true });
     const entries = await Promise.all(
       names.map(d => statToEntry(dir, d.name))
@@ -146,7 +146,8 @@ app.get('/api/quota', async (req, res) => {
 // Set quota (bytes). Pass null or negative for unlimited.
 app.post('/api/quota', async (req, res) => {
   try {
-    let { limit } = req.body || {};
+  const body = req.body || {};
+  let limit = body.limit;
     if (limit === null || limit === undefined || Number(limit) < 0) {
       quotaBytes = Infinity;
     } else {
@@ -164,7 +165,9 @@ app.post('/api/quota', async (req, res) => {
 // Create directory
 app.post('/api/mkdir', async (req, res) => {
   try {
-    const { dirPath, name } = req.body || {};
+  const body = req.body || {};
+  const dirPath = body.dirPath;
+  const name = body.name;
     if (!name) throw new Error('name required');
     const parent = safeJoin(ROOT_DIR, dirPath || '.');
     const finalName = await uniqueName(parent, name);
@@ -178,7 +181,10 @@ app.post('/api/mkdir', async (req, res) => {
 // Rename file or directory (collision-safe)
 app.post('/api/rename', async (req, res) => {
   try {
-    const { dirPath, oldName, newName } = req.body || {};
+  const body = req.body || {};
+  const dirPath = body.dirPath;
+  const oldName = body.oldName;
+  const newName = body.newName;
     if (!oldName || !newName) throw new Error('oldName and newName required');
     const dir = safeJoin(ROOT_DIR, dirPath || '.');
     const from = path.join(dir, oldName);
@@ -195,7 +201,9 @@ app.post('/api/rename', async (req, res) => {
 // Delete file or directory (recursive)
 app.post('/api/delete', async (req, res) => {
   try {
-    const { dirPath, name } = req.body || {};
+  const body = req.body || {};
+  const dirPath = body.dirPath;
+  const name = body.name;
     if (!name) throw new Error('name required');
     const dir = safeJoin(ROOT_DIR, dirPath || '.');
     const target = path.join(dir, name);
@@ -209,24 +217,24 @@ app.post('/api/delete', async (req, res) => {
 // Upload files (multiple)
 app.post('/api/upload', upload.array('files'), async (req, res) => {
   try {
-    const dirPath = req.body?.dirPath || '.';
+    const dirPath = (req.body && req.body.dirPath) ? req.body.dirPath : '.';
     const dir = safeJoin(ROOT_DIR, dirPath);
     await fsp.mkdir(dir, { recursive: true });
     const saved = [];
     // Quota pre-check: sum of incoming file sizes
     if (Number.isFinite(quotaBytes)) {
       let incoming = 0;
-      for (const f of req.files || []) incoming += f.size || 0;
+      for (const f of (req.files || [])) incoming += f.size || 0;
       const used = await getUsedBytes();
       if (used + incoming > quotaBytes) {
         // cleanup tmp uploads
-        for (const f of req.files || []) {
+        for (const f of (req.files || [])) {
           try { await fsp.rm(f.path, { force: true }); } catch {}
         }
         return res.status(413).json({ ok: false, error: 'Storage quota exceeded' });
       }
     }
-    for (const file of req.files || []) {
+    for (const file of (req.files || [])) {
       // Original name supports Chinese
       const desired = file.originalname;
       const finalName = await uniqueName(dir, desired);
@@ -238,7 +246,7 @@ app.post('/api/upload', upload.array('files'), async (req, res) => {
   } catch (e) {
     // Cleanup temp files on error
     try {
-      for (const f of req.files || []) {
+      for (const f of (req.files || [])) {
         await fsp.rm(f.path, { force: true });
       }
     } catch {}
@@ -249,7 +257,7 @@ app.post('/api/upload', upload.array('files'), async (req, res) => {
 // Download (supports Range for resume)
 app.get('/api/download', async (req, res) => {
   try {
-    const { filePath } = req.query || {};
+  const filePath = (req.query && req.query.filePath) ? req.query.filePath : null;
     if (!filePath) throw new Error('filePath required');
     const full = safeJoin(ROOT_DIR, filePath);
     const stat = await fsp.stat(full);
@@ -261,7 +269,7 @@ app.get('/api/download', async (req, res) => {
     let start = 0;
     let end = stat.size - 1;
     let status = 200;
-    const range = req.headers.range;
+  const range = req.headers && req.headers.range;
     if (range) {
       const m = /bytes=(\d*)-(\d*)/.exec(range);
       if (m) {
