@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web 文件服务器</title>
+    <style>
+      :root{--bg:#0f172a;--fg:#e2e8f0;--muted:#94a3b8;--accent:#22d3ee;--danger:#ef4444;--ok:#10b981}
+      *{box-sizing:border-box}
+      body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--fg)}
+      header{display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid #1f2937}
+      header h1{margin:0;font-size:18px}
+      .path{color:var(--muted);font-family:ui-monospace,Consolas,monospace}
+      .bar{margin-left:auto;display:flex;gap:8px}
+      button{background:#111827;border:1px solid #334155;color:var(--fg);padding:8px 12px;border-radius:8px;cursor:pointer}
+      button.primary{border-color:var(--accent);color:#022c22}
+      button:hover{border-color:var(--accent)}
+      main{max-width:1100px;margin:0 auto;padding:16px}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:10px;border-bottom:1px solid #1f2937}
+      tr:hover{background:#0b1220}
+      .name{cursor:pointer;color:var(--accent)}
+      .dir{color:#93c5fd}
+      .size{color:var(--muted)}
+      .ops button{margin-right:6px}
+      footer{padding:16px;text-align:center;color:var(--muted)}
+      .hidden{display:none}
+      input[type="file"]{display:none}
+      .breadcrumb span{cursor:pointer;color:var(--accent)}
+  .msg{margin:10px 0;color:var(--muted)}
+  .progress{height:8px;background:#1f2937;border-radius:6px;overflow:hidden;margin:8px 0;display:none}
+  .progress .bar{height:100%;width:0;background:linear-gradient(90deg,#22d3ee,#10b981)}
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Web 文件服务器</h1>
+      <div class="path breadcrumb" id="breadcrumb"></div>
+      <div class="bar">
+        <button id="uploadBtn">上传</button>
+        <input id="fileInput" type="file" multiple class="hidden" />
+        <button id="newFolderBtn">新建文件夹</button>
+        <button id="refreshBtn">刷新</button>
+      </div>
+    </header>
+    <main>
+      <section style="margin:10px 0; border:1px solid #1f2937; border-radius:8px; padding:10px;">
+        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+          <div>已用：<span id="quotaUsed">-</span></div>
+          <div>限额：<span id="quotaLimit">不限</span></div>
+          <div>
+            <label>修改限额（例如 10GB 或数值字节）：</label>
+            <input id="quotaInput" placeholder="例如 10GB / 104857600" style="width:220px;">
+            <button id="quotaSaveBtn">应用</button>
+            <button id="quotaUnlimitBtn">不限</button>
+          </div>
+        </div>
+      </section>
+  <div class="msg" id="msg"></div>
+      <div class="progress" id="progress"><div class="bar" id="progressBar"></div></div>
+      <div id="controls" style="display:none; margin-bottom:12px;">
+        <button id="cancelBtn" style="border-color:#ef4444">取消上传</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:45%">名称</th>
+            <th style="width:15%">大小</th>
+            <th style="width:20%">修改时间</th>
+            <th style="width:20%">操作</th>
+          </tr>
+        </thead>
+        <tbody id="list"></tbody>
+      </table>
+    </main>
+    <footer>无需登录·支持中文文件名·自动避免重名·删除/上传/重命名/新建文件夹</footer>
+    <script>
+  const listEl = document.getElementById('list');
+      const breadcrumbEl = document.getElementById('breadcrumb');
+      const msgEl = document.getElementById('msg');
+  const fileInput = document.getElementById('fileInput');
+  const uploadBtn = document.getElementById('uploadBtn');
+  const newFolderBtn = document.getElementById('newFolderBtn');
+      const refreshBtn = document.getElementById('refreshBtn');
+  const progress = document.getElementById('progress');
+  const progressBar = document.getElementById('progressBar');
+  const controls = document.getElementById('controls');
+  const cancelBtn = document.getElementById('cancelBtn');
+  const quotaUsedEl = document.getElementById('quotaUsed');
+  const quotaLimitEl = document.getElementById('quotaLimit');
+  const quotaInput = document.getElementById('quotaInput');
+  const quotaSaveBtn = document.getElementById('quotaSaveBtn');
+  const quotaUnlimitBtn = document.getElementById('quotaUnlimitBtn');
+  let currentXhr = null;
+
+      let cwd = []; // array of segments
+
+      function showMsg(text, type='info'){
+        msgEl.textContent = text || '';
+      }
+
+      function cwdPath(){
+        return cwd.length ? cwd.join('/') : '.';
+      }
+
+      function fmtSize(n){
+        if(n == null) return '-';
+        const u=['B','KB','MB','GB','TB'];
+        let i=0, v=n;
+        while(v>=1024 && i<u.length-1){v/=1024;i++;}
+        return `${v.toFixed( (i===0)?0:1)} ${u[i]}`;
+      }
+
+      function parseSize(input){
+        if(!input) return null;
+        const s = String(input).trim();
+        const m = /^([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)?$/i.exec(s);
+        if(!m){
+          const n = Number(s);
+          return Number.isFinite(n) ? n : null;
+        }
+        const val = parseFloat(m[1]);
+        const unit = (m[2]||'B').toUpperCase();
+        const map = { B:1, KB:1024, MB:1024**2, GB:1024**3, TB:1024**4 };
+        return Math.floor(val * (map[unit]||1));
+      }
+
+      function fmtTime(ms){
+        const d = new Date(ms);
+        return d.toLocaleString();
+      }
+
+      function renderBreadcrumb(){
+        breadcrumbEl.innerHTML='';
+        const root = document.createElement('span');
+        root.textContent = '/';
+        root.onclick = ()=>{cwd=[]; load();};
+        breadcrumbEl.appendChild(root);
+        let acc=[];
+        cwd.forEach((seg, idx)=>{
+          const sep = document.createTextNode(' / ');
+          breadcrumbEl.appendChild(sep);
+          const sp = document.createElement('span');
+          sp.textContent = seg;
+          sp.onclick = ()=>{cwd = cwd.slice(0, idx+1); load();};
+          breadcrumbEl.appendChild(sp);
+        });
+      }
+
+      async function api(path, options){
+        const res = await fetch(path, options);
+        if(!res.ok) throw new Error(await res.text());
+        const ct = res.headers.get('content-type')||'';
+        if(ct.includes('application/json')) return res.json();
+        return res.text();
+      }
+
+      async function load(){
+        renderBreadcrumb();
+        showMsg('加载中…');
+        try{
+          const p = cwdPath();
+          const data = await api(`/api/list?path=${encodeURIComponent(p)}`);
+          listEl.innerHTML = '';
+          // quota display
+          if (data.quota){
+            quotaUsedEl.textContent = fmtSize(data.quota.used || 0);
+            quotaLimitEl.textContent = (data.quota.limit==null) ? '不限' : fmtSize(data.quota.limit);
+          }
+          const upRow = document.createElement('tr');
+          const upCell = document.createElement('td');
+          upCell.colSpan=4;
+          upCell.innerHTML = '<span class="name">⬆️ 返回上级</span>';
+          upCell.querySelector('.name').onclick = ()=>{ if(cwd.length){cwd.pop(); load();}};
+          upRow.appendChild(upCell);
+          listEl.appendChild(upRow);
+
+          data.entries.forEach(e=>{
+            const tr = document.createElement('tr');
+            const nameTd = document.createElement('td');
+            const sizeTd = document.createElement('td');
+            const timeTd = document.createElement('td');
+            const opsTd = document.createElement('td');
+            nameTd.innerHTML = `<span class="name ${e.isDir?'dir':''}">${e.name}</span>`;
+            nameTd.querySelector('.name').onclick = ()=>{
+              if(e.isDir){cwd.push(e.name); load();}
+            };
+            sizeTd.className='size';
+            sizeTd.textContent = fmtSize(e.size);
+            timeTd.textContent = fmtTime(e.mtime);
+            opsTd.className='ops';
+            // download
+            if(!e.isDir){
+              const a = document.createElement('a');
+              const p = encodeURIComponent((cwd.length?cwd.join('/')+'/':'')+e.name);
+              a.href = `/api/download?filePath=${p}`;
+              a.textContent = '下载';
+              a.style.marginRight='8px';
+              opsTd.appendChild(a);
+            }
+            // rename
+            const rnBtn = document.createElement('button');
+            rnBtn.textContent = '重命名';
+            rnBtn.onclick = async ()=>{
+              const nn = prompt('输入新名称', e.name);
+              if(!nn) return;
+              await api('/api/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dirPath: cwdPath(), oldName: e.name, newName: nn})});
+              load();
+            };
+            opsTd.appendChild(rnBtn);
+            // delete
+            const delBtn = document.createElement('button');
+            delBtn.textContent = '删除';
+            delBtn.style.borderColor='var(--danger)';
+            delBtn.onclick = async ()=>{
+              if(!confirm(`确认删除 ${e.name} ?`)) return;
+              await api('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dirPath: cwdPath(), name: e.name})});
+              load();
+            };
+            opsTd.appendChild(delBtn);
+
+            tr.appendChild(nameTd);
+            tr.appendChild(sizeTd);
+            tr.appendChild(timeTd);
+            tr.appendChild(opsTd);
+            listEl.appendChild(tr);
+          });
+          showMsg('');
+        }catch(err){
+          console.error(err);
+          showMsg('加载失败：'+err.message);
+        }
+      }
+
+  uploadBtn.onclick = () => fileInput.click();
+
+      fileInput.addEventListener('change', (ev)=>{
+        const files = ev.target.files;
+        if(!files || !files.length) return;
+        if(currentXhr){ showMsg('已有上传进行中'); return; }
+        const fd = new FormData();
+        for(const f of files) fd.append('files', f, f.name);
+        fd.append('dirPath', cwdPath());
+        showMsg('上传中…');
+        progress.style.display = 'block';
+        progressBar.style.width = '0%';
+        controls.style.display = 'block';
+        uploadBtn.disabled = true;
+        newFolderBtn.disabled = true;
+        refreshBtn.disabled = true;
+
+        const xhr = new XMLHttpRequest();
+        currentXhr = xhr;
+        xhr.open('POST', '/api/upload');
+        xhr.upload.onprogress = (e)=>{
+          if(e.lengthComputable){
+            const p = Math.round(e.loaded * 100 / e.total);
+            progressBar.style.width = p + '%';
+            showMsg('上传中… ' + p + '%');
+          }
+        };
+        xhr.onload = ()=>{
+          if(xhr.status >= 200 && xhr.status < 300){
+            progressBar.style.width = '100%';
+            showMsg('上传完成');
+            try{
+              const resp = JSON.parse(xhr.responseText);
+              if(resp?.quota){
+                quotaUsedEl.textContent = fmtSize(resp.quota.used||0);
+                quotaLimitEl.textContent = (resp.quota.limit==null)?'不限':fmtSize(resp.quota.limit);
+              }
+            }catch{}
+            load();
+          }else{
+            let errText = xhr.responseText;
+            try{ const j = JSON.parse(errText); errText = j.error || errText; }catch{}
+            showMsg('上传失败：' + errText);
+          }
+          progress.style.display = 'none';
+          controls.style.display = 'none';
+          fileInput.value='';
+          uploadBtn.disabled = false;
+          newFolderBtn.disabled = false;
+          refreshBtn.disabled = false;
+          currentXhr = null;
+        };
+        xhr.onerror = ()=>{
+          showMsg('上传失败：网络错误');
+          progress.style.display = 'none';
+          controls.style.display = 'none';
+          fileInput.value='';
+          uploadBtn.disabled = false;
+          newFolderBtn.disabled = false;
+          refreshBtn.disabled = false;
+          currentXhr = null;
+        };
+        xhr.send(fd);
+      });
+
+      cancelBtn.onclick = ()=>{
+        if(currentXhr){
+          currentXhr.abort();
+          showMsg('已取消上传');
+          progress.style.display = 'none';
+          controls.style.display = 'none';
+          fileInput.value='';
+          uploadBtn.disabled = false;
+          newFolderBtn.disabled = false;
+          refreshBtn.disabled = false;
+          currentXhr = null;
+        }
+      };
+
+      quotaSaveBtn.onclick = async ()=>{
+        const bytes = parseSize(quotaInput.value);
+        if(bytes==null){ showMsg('格式错误：请输入字节数或如 10GB'); return; }
+        try{
+          const res = await api('/api/quota', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ limit: bytes }) });
+          quotaUsedEl.textContent = fmtSize(res.used||0);
+          quotaLimitEl.textContent = (res.limit==null)?'不限':fmtSize(res.limit);
+          showMsg('限额已更新');
+        }catch(err){ showMsg('更新失败：'+err.message); }
+      };
+
+      quotaUnlimitBtn.onclick = async ()=>{
+        try{
+          const res = await api('/api/quota', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ limit: -1 }) });
+          quotaUsedEl.textContent = fmtSize(res.used||0);
+          quotaLimitEl.textContent = '不限';
+          showMsg('限额已取消');
+        }catch(err){ showMsg('操作失败：'+err.message); }
+      };
+
+      newFolderBtn.onclick = async ()=>{
+        const name = prompt('文件夹名称');
+        if(!name) return;
+        try{
+          await api('/api/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dirPath: cwdPath(), name})});
+          load();
+        }catch(err){
+          showMsg('创建失败：'+err.message);
+        }
+      };
+
+      refreshBtn.onclick = ()=> load();
+
+      load();
+    </script>
+  </body>
+  </html>
