@@ -118,6 +118,32 @@ async function statToEntry(base, name) {
   };
 }
 
+// Compatibility recursive delete for older Node versions (no fsp.rm)
+async function removePath(target) {
+  let st;
+  try { st = await fsp.stat(target); } catch (e) {
+    // not found
+    return;
+  }
+  if (st.isDirectory()) {
+    let entries = [];
+    try { entries = await fsp.readdir(target); } catch {}
+    for (const name of entries) {
+      const p = path.join(target, name);
+      await removePath(p);
+    }
+    try { await fsp.rmdir(target); } catch (e) {
+      // fallback using fs.rmdirSync if needed
+      try { fs.rmdirSync(target); } catch {}
+    }
+  } else {
+    try { await fsp.unlink(target); } catch (e) {
+      // fallback using fs.unlinkSync
+      try { fs.unlinkSync(target); } catch {}
+    }
+  }
+}
+
 // List directory
 app.get('/api/list', async (req, res) => {
   try {
@@ -215,7 +241,7 @@ app.post('/api/delete', async (req, res) => {
     } catch {
       return res.status(404).json({ ok: false, error: 'not found' });
     }
-    await fsp.rm(target, { recursive: true, force: true });
+  await removePath(target);
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
