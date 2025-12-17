@@ -68,6 +68,7 @@ async function getUsedBytes() {
 }
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // CORS for convenience
 app.use((req, res, next) => {
@@ -201,12 +202,19 @@ app.post('/api/rename', async (req, res) => {
 // Delete file or directory (recursive)
 app.post('/api/delete', async (req, res) => {
   try {
-  const body = req.body || {};
-  const dirPath = body.dirPath;
-  const name = body.name;
-    if (!name) throw new Error('name required');
-    const dir = safeJoin(ROOT_DIR, dirPath || '.');
+    const body = req.body || {};
+    const dirPath = body.dirPath || '.';
+    const name = body.name;
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ ok: false, error: 'name required' });
+    }
+    const dir = safeJoin(ROOT_DIR, dirPath);
     const target = path.join(dir, name);
+    try {
+      await fsp.access(target);
+    } catch {
+      return res.status(404).json({ ok: false, error: 'not found' });
+    }
     await fsp.rm(target, { recursive: true, force: true });
     res.json({ ok: true });
   } catch (e) {
