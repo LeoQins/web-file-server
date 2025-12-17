@@ -90,6 +90,10 @@ journalctl -u web-file-server -f
 curl http://127.0.0.1:3000/api/list?path=.
 
 # 5) 更新与维护
+
+# 组合命令：查找并停止所有node进程
+ps aux | grep -E "(node|npm)" | grep -v grep | awk '{print $2}' | xargs kill
+
 # 更新依赖/代码后重启
 cd /home/userland/web-file-server && npm install --omit=dev
 sudo systemctl restart web-file-server
